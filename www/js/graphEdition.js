@@ -212,11 +212,15 @@ function createEditionGraph(d3, saveAs, Blob) {
             $('#modalCopyGraph').modal('show');
         });
 
+        d3.select("#upload-graph").on("click", function(){
+            $('#modalUploadGraph').modal('show');
+        });
+
         // handle download data
         d3.select("#download-input").on("click", function(){
             var saveEdges = [];
             thisGraph.edges.forEach(function(val, i){
-                saveEdges.push({source: val.source.id, target: val.target.id});
+                saveEdges.push({source: val.source.id, target: val.target.id, type: val.type});
             });
 
             var blob = new Blob([window.JSON.stringify({"nodes": thisGraph.nodes, "edges": saveEdges})], {type: "text/plain;charset=utf-8"});
@@ -542,28 +546,50 @@ function createEditionGraph(d3, saveAs, Blob) {
         return d3txt;
     };
 
+    GraphCreator.prototype.addJSONGraph = function(graphParse) {
+
+        var thisGraph = this;
+        thisGraph.nodes = graphParse.nodes;
+        //thisGraph.setIdCt(graphParse.nodes.length + 1);
+        var newEdges = graphParse.edges;
+
+        // New edges sources and targets need to be nodes. The loop replace the ids by the actual nodes
+        newEdges.forEach(function(e, i){
+            newEdges[i] = {source: thisGraph.nodes.filter(function(n){return n.id == e.source;})[0],
+                           target: thisGraph.nodes.filter(function(n){return n.id == e.target;})[0],
+                           type: e.type};
+        });
+        //console.log(newEdges);
+        thisGraph.edges = newEdges;
+        thisGraph.updateGraph();
+    }
+
     GraphCreator.prototype.addArgument = function() {
 
         var thisGraph = this;
 
-        var docEl = document.documentElement,
-        bodyEl = document.getElementsByTagName('body')[0];
-        var x = window.innerWidth || docEl.clientWidth || bodyEl.clientWidth;
-        var y = window.innerHeight|| docEl.clientHeight|| bodyEl.clientHeight;
-
-        var select = document.getElementById('editLabel');
-
-        var argument = document.getElementById('editCurrentArgument').value;
-
-        var title = select.value;
+        var title = document.getElementById('editLabel').value;
 
         if (thisGraph.nodes.filter(function(n){return n.title == title;}).length > 0) {
             // return false if label is already being used
             return false;
         }
 
+        var docEl = document.documentElement,
+        bodyEl = document.getElementsByTagName('body')[0];
+        var x = window.innerWidth || docEl.clientWidth || bodyEl.clientWidth;
+        var y = window.innerHeight|| docEl.clientHeight|| bodyEl.clientHeight;
+
+        var argument = document.getElementById('editCurrentArgument').value;
+
+        var weight = document.getElementById('editWeight').value;
+
+        if (weight == "None") {
+            weight = null;
+        }
+
         var xycoords = d3.mouse(thisGraph.svgG.node()),
-            d = {id: thisGraph.idct++, title: title, x: x / 2.0, y: y / 2.0, tooltip: argument};
+            d = {id: thisGraph.idct++, title: title, x: x / 2.0, y: y / 2.0, tooltip: argument, weight: weight};
         thisGraph.nodes.push(d);
 
         thisGraph.updateGraph();
@@ -708,6 +734,13 @@ function createEditionGraph(d3, saveAs, Blob) {
                     var conclusionsList = document.getElementById('editConclusions');
                     var premiseAndConclusion = String(d.tooltip).split(" -> ");
 
+                    var weight = "None";
+                    if (d.weight != null) {
+                        weight = d.weight;
+                    }
+
+                    document.getElementById("editWeight").value = weight;
+                    
                     validateArgument(premiseAndConclusion[0]);
 
                     if (premiseAndConclusion.length == 2) {
@@ -759,6 +792,7 @@ function createEditionGraph(d3, saveAs, Blob) {
                         document.getElementById("editConclusionFrom").innerHTML = from;
                         document.getElementById("editConclusionTo").innerHTML = to;
                         document.getElementById('editInvertRange').disabled = false;
+
                     } else {
                         // Check if there is a premise before adding any conclusion
                         for (var i = 0; i < conclusionsList.options.length; i++) {
@@ -782,7 +816,9 @@ function createEditionGraph(d3, saveAs, Blob) {
 
                         document.getElementById('editCurrentArgument').value = "";
 
-                        document.getElementById('editLabel'). value = "";
+                        document.getElementById('editLabel').value = "";
+
+                        document.getElementById("editWeight").value = "None";
 
                         document.getElementById("editAddArgument").disabled = true;
 
@@ -865,48 +901,121 @@ function createEditionGraph(d3, saveAs, Blob) {
     GraphCreator.prototype.setActivation = function(node, row) {
     }
 
+    GraphCreator.prototype.get_from_to = function(level, attribute) {
+        // Given a level-attribute pair, find the corresponding numeric range
+        // of the level for the current feature set selected.
+        var select = document.getElementById('editFeatureset'),
+        i = select.selectedIndex;
+
+        if (i == -1) {
+            return;
+        }
+
+        currentFeatureset = select.options[i].text;
+
+        // Run through all attributes and their respective level in order
+        // to find the current premise's range
+        for (var attr = 0; attr < attributesByFeatureset_[currentFeatureset].length; attr++) {
+
+            var correctAttributeLevel = attributesByFeatureset_[currentFeatureset][attr].attribute == attribute &&
+                                        attributesByFeatureset_[currentFeatureset][attr].a_level == level;
+
+            if (correctAttributeLevel) {
+
+                var from = attributesByFeatureset_[currentFeatureset][attr].a_from;
+                var to = attributesByFeatureset_[currentFeatureset][attr].a_to;
+
+                return [from, to];
+            }
+        }
+    }
+
+
     GraphCreator.prototype.getLevelsDescription = function(argument) {
 
         var result = "<br><b>Attributes used</b><br>";
-        // remove conclusion
+        
+        // Remove conclusion
         var premiseAndConclusion = String(argument).split(" -> ");
         argument = premiseAndConclusion[0];
 
         // Run through all premises of the node's argument
-        var premises = argument.split(" ^ ");
-        for(var premI = 0; premI < premises.length; premI++){
+        var premises = argument.split(" AND ");
 
-            var levelAndAttribute = premises[premI].split(" ");
+        // Dictionary to be built with attributes as keys, and numeric levels as values
+        var attribute_values = {};
 
-            // Remove parenthesis
-            var level = levelAndAttribute[0].replace("(", "");
-            var attribute = levelAndAttribute[1].replace(")", "");
+        // Each premise can have zero or many OR clauses. For example "('low fatigue' OR 'high fatigue')"
+        for(let premise of premises){
 
-            var select = document.getElementById('editFeatureset'),
-            i = select.selectedIndex;
+            // Remove parathesis and quotes from the premise
+            premise = premise.replace("(", "").replace(")", "").replace(/"/g, "");
 
-            if (i == -1)
-                return;
+            // Check if premise has OR operator
+            if (premise.includes(" OR ")) {
 
-            currentFeatureset = select.options[i].text;
+                // Break the premise in all the level-attribute pairs
+                var allLevelandAttributes = premise.split(" OR ");
 
-            // Run through all attributes and their respective level in order
-            // to find the current premise's range
-            for (var attr = 0; attr < attributesByFeatureset_[currentFeatureset].length; attr++) {
+                // Get the attribute of the premise (it should be the same attribute for all level-attribute pairs)
+                var attribute = allLevelandAttributes[1].split(" ")[1];
 
-                var correctAttributeLevel = attributesByFeatureset_[currentFeatureset][attr].attribute == attribute &&
-                                            attributesByFeatureset_[currentFeatureset][attr].a_level == level;
+                // Concatenate all the levels (as ranges) of this attribute to the tooltip
+                for (let levelAndAttribute of allLevelandAttributes) {
 
-                if (correctAttributeLevel) {
+                    // Split level-attribute pairs
+                    levelAndAttribute = levelAndAttribute.split(" ")
+                    
+                    if (! attribute_values[levelAndAttribute[1]]) {
+                        attribute_values[levelAndAttribute[1]] = []
+                    }
 
-                    var from = attributesByFeatureset_[currentFeatureset][attr].a_from;
-                    var to = attributesByFeatureset_[currentFeatureset][attr].a_to;
+                    // Get the min-max of the level of the attribtue
+                    var from_to = graph.get_from_to(levelAndAttribute[0], levelAndAttribute[1]);
+                    
+                    
+                    // From and to are the same. Categorical level
+                    if (Math.abs(from_to[0] - from_to[1]) < 0.00001) {
+                        attribute_values[levelAndAttribute[1]].push(from_to[0])
+                    } else {
+                        attribute_values[levelAndAttribute[1]].push(from_to)
+                    }
+                }
 
-                    result += "<i>" + attribute + "</i>" + " from " + from + " to " + to + "<br>";
-                    break;
+            } else {  // There is no " OR " operator. It is a single level-attribute pair
+                var level = premise.split(" ")[0];
+                var attribute = premise.split(" ")[1];
+                var from_to = graph.get_from_to(level, attribute);
+
+                if (! attribute_values[attribute]) {
+                    attribute_values[attribute] = []
+                }
+
+                if (Math.abs(from_to[0] - from_to[1]) < 0.00001) {
+                    attribute_values[attribute].push(from_to[0]);
+                } else {
+                    attribute_values[attribute].push(from_to);
                 }
             }
         }
+
+        // Go over the dictionary and add it to the correspoding resulting html
+        Object.keys(attribute_values).forEach(key => {
+            result += "<i>" + key + "</i>: ";
+
+            for (let level of attribute_values[key]) {
+                if (Array.isArray(level) ) {
+                    result += "(" + level[0] + ", " + level[1] + "), ";
+                } else {
+                    result += level + ", ";
+                }
+            }
+
+            // Remove last ", "
+            result = result.slice(0, -2);
+            result += "<br>";
+
+        });
 
         return result;
     }
@@ -993,8 +1102,6 @@ function createEditionGraph(d3, saveAs, Blob) {
             state = thisGraph.state;
 
         thisGraph.paths = thisGraph.paths.data(thisGraph.edges, function(d){
-            //console.log("D");
-            //console.log(d);
             return String(d.source.id) + "+" + String(d.target.id);
         });
 
@@ -1206,10 +1313,15 @@ function createEditionGraph(d3, saveAs, Blob) {
 
             var levelDescription = thisGraph.getLevelsDescription(d.tooltip);
 
+            var weight = "None"
+            if (d.weight != null) {
+                weight = d.weight;
+            }
+
             if (levelDescription.length < 30) { //Greater than <br><b>Attributes used<b><br>
-                tooltip.selectAll("text").html("<b>" + d.title + "</b>: " + d.tooltip + "<br/><br/><b>Source attacks:</b> " + String(source) + "<br /><b>Target attacks:</b> " + String(target));
+                tooltip.selectAll("text").html("<b>" + d.title + "</b>: " + d.tooltip + "<br/>Weight: " + weight + "<br/><b>Source attacks:</b> " + String(source) + "<br /><b>Target attacks:</b> " + String(target));
             } else {
-                tooltip.selectAll("text").html("<b>" + d.title + "</b>: " + d.tooltip + "<br>" + levelDescription + "<br><b>Source attacks:</b> " + String(source) + "<br /><b>Target attacks:</b> " + String(target));
+                tooltip.selectAll("text").html("<b>" + d.title + "</b>: " + d.tooltip  + "<br/>Weight: " + weight + "<br>" + levelDescription + "<br><b>Source attacks:</b> " + String(source) + "<br /><b>Target attacks:</b> " + String(target));
             }
 
             tooltip.style("visibility", "visible");
@@ -1280,6 +1392,7 @@ function createEditionGraph(d3, saveAs, Blob) {
                        "<input type=\"hidden\" maxlength=\"2000\" name=\"editArgument[]\">" +
                        "<input type=\"hidden\" maxlength=\"40\" name=\"editLabel[]\">" +
                        "<input type=\"hidden\" maxlength=\"40\" name=\"editConclusion[]\">" +
+                       "<input type=\"hidden\" maxlength=\"40\" name=\"editWeight[]\">" +
                        "</div>" +
                        "<div class=\"edit-form-graph\">" +
                        "<input type=\"hidden\" maxlength=\"40\" name=\"editSourceLabel[]\">" +
@@ -1320,6 +1433,8 @@ function createEditionGraph(d3, saveAs, Blob) {
                 $('input[name^="editConclusion"]').last().attr("value", "NULL");
             }
             $('input[name^="editLabel"]').last().attr("value", d.title);
+
+            $('input[name^="editWeight"]').last().attr("value", d.weight);
 
             var controlForm = $('.controlsEdit'),
             currentEntry = $('.edit-form-position:first'),
@@ -1373,10 +1488,12 @@ function createEditionGraph(d3, saveAs, Blob) {
             if (thisGraph.state.selectedNode != null) {
                 var newLabel = document.getElementById('editLabel').value;
                 var newToolTip = document.getElementById('editCurrentArgument').value;
+                var newWeight = document.getElementById('editWeight').value;
 
                 if(d.id == thisGraph.state.selectedNode.id) {
                     d.title = newLabel;
                     d.tooltip = newToolTip;
+                    d.weight = newWeight;
 
                     thisGraph.styleTitle(d3.select(this), d.title);
                     d3.select(this).classed(thisGraph.consts.selectedClass, false);
@@ -1525,8 +1642,8 @@ function createEditionGraph(d3, saveAs, Blob) {
                 } else {
                     tooltip = args_[i].argument;
                 }
-
-                nodes.push({id: id, title: args_[i].label, x: parseFloat(args_[i].x), y: parseFloat(args_[i].y), tooltip: tooltip})
+                
+                nodes.push({id: id, title: args_[i].label, x: parseFloat(args_[i].x), y: parseFloat(args_[i].y), tooltip: tooltip, weight: args_[i].weight})
 
                 indexNode.push(args_[i].label);
 
@@ -1683,7 +1800,6 @@ $("#modalAttackType").on("hidden.bs.modal", function () {
         
 d3.select("#rebuttals-input").on("click", function(){
     d3.event.preventDefault();
-    //console.log("clicou");
     graph.addRebuttals();
 });
 
@@ -1751,6 +1867,42 @@ d3.select("#editRenameGraph").on("click", function() {
         // to update graph list
         document.getElementById("editGraphForm").submit();
     }
+});
+
+
+d3.select('#uploadNewJSONGraph').on("click", function() {
+    d3.event.preventDefault();
+
+    var jsonCode = document.getElementById('jsoncodegraph').value;
+
+    if (graph.nodes.length > 0) {
+        window.alert("You can only upload JSON code for empty graphs. Greate a new graph and upload the code.");
+        return
+    }
+
+    if(jsonCode.length == 0) {
+        window.alert("Please enter some code in the text area.", "Empty code error.");
+        return;
+    }
+    
+    var graphParse;
+    try {
+        graphParse = JSON.parse(jsonCode);
+    } catch(err) {
+        window.alert("Syntax error in imported code. Please check your JSON syntax.", "Syntax error.");
+        return;
+    }
+
+    if (! graphParse.hasOwnProperty('nodes') || ! graphParse.hasOwnProperty('edges')) {
+        window.alert("Your JSON needs a nodes array and an edges array. Please check example.", "Syntax error.");
+        return;
+    }
+
+    graph.addJSONGraph(graphParse);
+
+    $('#modalUploadGraph').modal('hide');
+    document.getElementById('jsoncodegraph').value = "";
+
 });
 
 // Save new graph version

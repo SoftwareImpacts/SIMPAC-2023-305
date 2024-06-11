@@ -31,13 +31,14 @@ USE `arg-db`;
 DROP TABLE IF EXISTS `arguments`;
 CREATE TABLE `arguments` (
   `id` int(11) NOT NULL,
-  `argument` varchar(1000) NOT NULL,
+  `argument` varchar(10000) NOT NULL,
   `conclusion` varchar(100) DEFAULT NULL,
   `x` decimal(10,0) NOT NULL,
   `y` decimal(10,0) NOT NULL,
   `label` varchar(40) NOT NULL,
   `graph` varchar(40) NOT NULL,
-  `featureset` varchar(40) NOT NULL
+  `featureset` varchar(40) NOT NULL,
+  `weight` decimal(15,5) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 --
